@@ -197,9 +197,10 @@ portfolio_holdings (id, portfolio_id, stock_id, quantity, avg_price, currency, c
 portfolio_transactions (id, holding_id, type[buy/sell], quantity, price, date)
   -- full history retained, not just current state — enables future P&L analytics
 
-price_timeseries (stock_id, timestamp, open, high, low, close, volume, interval)
+price_timeseries (stock_id, timestamp, open, high, low, close, volume, bar_interval)
   -- TimescaleDB hypertable, partitioned by time
   -- stored at daily granularity; weekly/monthly views computed on read
+  -- column is "bar_interval", not "interval" — INTERVAL is a reserved word in H2 (test profile)
 
 analysis_findings (id, user_id, portfolio_id NULL, watchlist_id NULL, stock_id,
                     finding_type, summary, details_json, created_at)
@@ -291,6 +292,7 @@ Grouped by service/repo, reflecting the polyglot design explained in [Section 3.
 - Intraday (minute-level) historical storage is explicitly out of scope for Phase 1 — daily granularity is sufficient and keeps usage within free-tier limits.
 - Basic retry/backoff logic recommended around all external data-provider calls.
 - **Live/real-time display value (not stored):** see Section 2.5 — this is a separate, on-demand call path from the daily batch sync described above.
+- **Current implementation status:** the sync logic (distinct-symbol dedup, `AlphaVantageProvider` behind the `DataProvider` abstraction, upsert into `price_timeseries`) is wired up and manually triggered via `POST /api/marketdata/sync?full={true|false}` (`full=true` for the one-time historical backfill, `full=false`, the default, for the incremental daily update). The `@Scheduled` job described above that calls this same logic automatically post-market-close has not been added yet — see docs/roadmap-status.md. Distinct-symbol sourcing currently covers watchlists only; portfolio holdings will be folded in once the portfolio module (schema/CRUD) exists.
 
 ---
 
