@@ -197,9 +197,10 @@ portfolio_holdings (id, portfolio_id, stock_id, quantity, avg_price, currency, c
 portfolio_transactions (id, holding_id, type[buy/sell], quantity, price, date)
   -- full history retained, not just current state — enables future P&L analytics
 
-price_timeseries (stock_id, timestamp, open, high, low, close, volume, interval)
+price_timeseries (stock_id, timestamp, open, high, low, close, volume, bar_interval)
   -- TimescaleDB hypertable, partitioned by time
   -- stored at daily granularity; weekly/monthly views computed on read
+  -- column is "bar_interval", not "interval" — INTERVAL is a reserved word in H2 (test profile)
 
 analysis_findings (id, user_id, portfolio_id NULL, watchlist_id NULL, stock_id,
                     finding_type, summary, details_json, created_at)
@@ -291,6 +292,7 @@ Grouped by service/repo, reflecting the polyglot design explained in [Section 3.
 - Intraday (minute-level) historical storage is explicitly out of scope for Phase 1 — daily granularity is sufficient and keeps usage within free-tier limits.
 - Basic retry/backoff logic recommended around all external data-provider calls.
 - **Live/real-time display value (not stored):** see Section 2.5 — this is a separate, on-demand call path from the daily batch sync described above.
+- **Current implementation status:** the sync logic (distinct-symbol dedup, `AlphaVantageProvider` behind the `DataProvider` abstraction, upsert into `price_timeseries`) is wired up and manually triggered via `POST /api/marketdata/sync?full={true|false}` (`full=true` for the one-time historical backfill, `full=false`, the default, for the incremental daily update). The `@Scheduled` job described above that calls this same logic automatically post-market-close has not been added yet — see docs/roadmap-status.md. Distinct-symbol sourcing currently covers watchlists only; portfolio holdings will be folded in once the portfolio module (schema/CRUD) exists.
 
 ---
 
@@ -308,6 +310,9 @@ The MCP Server is a separate Python service that independently implements its ow
 | `get_user_portfolios(user_id)` | Read | All of a user's named portfolios and their holdings |
 | `save_analysis_finding(user_id, stock_id, finding_type, summary, details)` | Write | Persists an agent-generated finding (e.g., a momentum signal) to `analysis_findings`. This write is what triggers the notification flow (Section 8.4). |
 | `create_alert(user_id, stock_id, condition)` | Write | Lets the agent (or a user-initiated flow) register a standing watch condition for future evaluation |
+| `apply_watchlist_update(user_id, watchlist_name, action, symbol, exchange)` | Write | **Documented exception** to this section's data-ownership split: writes to `watchlists`/`watchlist_items`/`stocks` (otherwise `core-api`-owned, Section 3.3) so the watchlist-import agent (Section 8.2) can persist changes without the Agent Worker calling Core API's REST API directly. Single-item and idempotent — one call per resolved stock, not a batch. Mirrors `core-api`'s own `WatchlistService.findOrCreateStock` for symbols not yet in `stocks` (a minimal stub row; a later Core API sync backfills real metadata/history). |
+
+> **Caveat discovered in practice:** any write tool exposed on the MCP Server is reachable by *every* connected MCP client, not just the Agent Worker — including Claude Desktop's own model, if it's also connected to this server directly. For a simple, fully-specified request, Claude Desktop can and will call `apply_watchlist_update` straight from chat, bypassing `resolve`'s sanitization and confidence-scoring entirely (confirmed in practice, docs/roadmap-status.md). There's no server-side fix for this — a write tool's own connections can't distinguish "the Agent Worker calling this" from "the chat model calling this directly." The mitigation is client-side: disable the tool in Claude Desktop's own per-tool toggle (leaving it registered on the server, since the Agent Worker's MCP client connects to it directly and is unaffected by that toggle). Worth remembering for any future write tool meant for agent-only use.
 
 ### 8.2 Multi-Agent Orchestration
 
@@ -324,6 +329,10 @@ Built with LangGraph (Python) as a directed graph of specialized agents:
 - Parallel fan-out/fan-in for analyzing multiple stocks concurrently.
 - Session memory/state persistence via LangGraph checkpointers (resumable analysis sessions, follow-up queries like "compare that to last week").
 - All outputs validated against Pydantic schemas — no unstructured/freeform critical output.
+
+**Agent Worker as its own MCP server:** the Agent Worker is not just a library of functions the MCP Server imports in-process — it runs as its own standalone process, registered as a second, independent MCP server (its own `mcpServers` entry) alongside the MCP Server described in Section 8.1. Whatever calls it (Claude Desktop today; a scheduler or another service tomorrow) reaches it only over the MCP protocol, and it in turn connects to the Section 8.1 MCP Server as an MCP *client* for every read and write — the same "Agent Worker only talks to the MCP Server" boundary from Section 3.3, just genuinely implemented rather than shortcut via a Python import.
+
+**Watchlist-import agent** (first concrete graph built this way): `resolve` (one LLM call — turns a raw Excel/CSV file or a freeform request into a structured, validated proposal, cross-checked against the user's existing watchlists via an MCP read) → `apply_loop` (no LLM — one `apply_watchlist_update` MCP call per resolved stock, not a batch, so a partial failure or a re-run is safe) → `summarize` (no LLM — packages the result). This is a separate graph from the Data Gathering → Technical → Sentiment → Synthesis pipeline above, which remains not-yet-built.
 
 ### 8.3 Observability & Evaluation
 

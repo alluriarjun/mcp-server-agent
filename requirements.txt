@@ -1,0 +1,7 @@
+mcp
+psycopg2-binary
+anthropic
+pydantic
+python-dotenv
+langgraph
+openpyxl
