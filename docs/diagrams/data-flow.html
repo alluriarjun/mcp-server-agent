@@ -220,7 +220,111 @@
 <figcaption>
   The <strong>LLM (Claude API)</strong> is the reasoning engine shared by all agents — it decides which MCP tool to call and synthesises the final answer.<br>
   Specialized agents (Momentum, Value, Sentiment, Synthesis) live <em>inside</em> the Agent Worker as LangGraph sub-graphs. Each agent sends its own prompt + context to Claude; Claude responds with a tool call; the Agent Worker executes it against the MCP Server; the result feeds back to Claude.<br>
-  Adding a new agent (e.g. a Dividend Agent) means adding a new LangGraph sub-graph — no changes to the MCP Server or Claude API wiring.
+  Adding a new agent (e.g. a Dividend Agent) means adding a new LangGraph sub-graph — no changes to the MCP Server or Claude API wiring.<br>
+  <strong>Status (2026-09-03, Week 5):</strong> this pipeline — the design-doc.md §8.2 portfolio-analysis graph — is still the target design, not yet built. The first real LangGraph agent turned out to be a different one: the watchlist-import agent below, built and validated live instead. See <a href="../roadmap-status.md">roadmap-status.md</a>.
+</figcaption>
+</figure>
+
+<figure style="margin-top:56px">
+<svg viewBox="0 0 1060 620" role="img"
+     aria-label="Watchlist-import agent data flow: Claude Desktop calls the agent worker's MCP tool, which runs a LangGraph resolve/apply-loop/summarize graph, connecting to the StockPeek MCP server as an MCP client for reads and writes against the shared database."
+     xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="b-purple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3z" fill="#A371F7"/></marker>
+  <marker id="b-amber"  markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3z" fill="#D29922"/></marker>
+  <marker id="b-green"  markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3z" fill="#3FB950"/></marker>
+  <marker id="b-red"    markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3z" fill="#F85149"/></marker>
+</defs>
+
+<!-- track label -->
+<rect x="20" y="8" width="1020" height="24" rx="4" fill="#2E1461"/>
+<text x="530" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" font-weight="600" fill="#D2A8FF">WATCHLIST-IMPORT AGENT · built &amp; validated live (Week 5–6)</text>
+
+<!-- Claude Desktop -->
+<rect x="420" y="50" width="220" height="50" rx="8" fill="#161B22" stroke="#A371F7" stroke-width="1.5"/>
+<text x="530" y="70" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="600" fill="#A371F7">Claude Desktop</text>
+<text x="530" y="87" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">today's trigger only</text>
+
+<!-- bypass path (dashed, red) -->
+<rect x="185" y="68" width="170" height="30" rx="3" fill="#0D1117"/>
+<text x="270" y="79" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#F85149">direct call possible —</text>
+<text x="270" y="91" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#F85149">disabled via tool toggle</text>
+<path d="M420,100 L270,100 L270,380 L310,380" fill="none" stroke="#F85149" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#b-red)"/>
+
+<!-- ↓ to Agent Worker -->
+<line x1="530" y1="100" x2="530" y2="148" stroke="#A371F7" stroke-width="1.5" marker-end="url(#b-purple)"/>
+<rect x="450" y="114" width="160" height="16" rx="3" fill="#0D1117"/>
+<text x="530" y="126" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#A371F7">tool call: run_watchlist_import</text>
+
+<!-- Agent Worker outer box -->
+<rect x="310" y="148" width="440" height="130" rx="10" fill="#161B22" stroke="#A371F7" stroke-width="2"/>
+<text x="530" y="170" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600" fill="#A371F7">Agent Worker · stockpeek-agent-worker</text>
+<text x="530" y="186" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">its own MCP server; connects to stockpeek as an MCP client</text>
+
+<!-- sub-nodes: resolve / apply loop / summarize -->
+<rect x="326" y="200" width="129" height="50" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+<text x="390" y="220" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" font-weight="600" fill="#3FB950">Resolve</text>
+<text x="390" y="235" text-anchor="middle" font-family="Inter,sans-serif" font-size="9" fill="#8B949E">LLM + MCP read</text>
+
+<rect x="465" y="200" width="129" height="50" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+<text x="529" y="220" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" font-weight="600" fill="#3FB950">Apply loop</text>
+<text x="529" y="235" text-anchor="middle" font-family="Inter,sans-serif" font-size="9" fill="#8B949E">N MCP writes</text>
+
+<rect x="604" y="200" width="130" height="50" rx="6" fill="#0D1117" stroke="#30363D" stroke-width="1"/>
+<text x="669" y="220" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" font-weight="600" fill="#3FB950">Summarize</text>
+<text x="669" y="235" text-anchor="middle" font-family="Inter,sans-serif" font-size="9" fill="#8B949E">packages result</text>
+
+<!-- Agent Worker → Claude API -->
+<line x1="650" y1="278" x2="850" y2="340" stroke="#D29922" stroke-width="1.5" marker-end="url(#b-amber)"/>
+<rect x="700" y="292" width="150" height="14" rx="2" fill="#0D1117"/>
+<text x="775" y="303" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#D29922">resolve's 1 LLM call</text>
+
+<!-- Agent Worker → stockpeek MCP Server -->
+<line x1="390" y1="278" x2="390" y2="340" stroke="#A371F7" stroke-width="1.5" marker-end="url(#b-purple)"/>
+<rect x="298" y="290" width="184" height="26" rx="2" fill="#0D1117"/>
+<text x="390" y="300" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#A371F7">resolve reads +</text>
+<text x="390" y="312" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#A371F7">apply_loop writes (×N)</text>
+
+<!-- Claude API box -->
+<rect x="800" y="340" width="230" height="80" rx="10" fill="#1C1410" stroke="#D29922" stroke-width="2"/>
+<rect x="850" y="334" width="38" height="16" rx="3" fill="#D29922"/>
+<text x="869" y="346" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600" fill="#0D1117">LLM</text>
+<text x="915" y="366" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600" fill="#D29922">Claude API</text>
+<text x="915" y="382" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">llm_model_dev (Haiku)</text>
+<text x="915" y="398" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">needs a real key + billing credits</text>
+
+<!-- stockpeek MCP Server box -->
+<rect x="310" y="340" width="330" height="80" rx="8" fill="#161B22" stroke="#D29922" stroke-width="1.5"/>
+<text x="475" y="362" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="600" fill="#D29922">stockpeek MCP Server</text>
+<text x="475" y="378" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">get_user_watchlists (read)</text>
+<text x="475" y="393" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">apply_watchlist_update (write, idempotent)</text>
+
+<!-- stockpeek MCP Server → PostgreSQL -->
+<line x1="475" y1="420" x2="475" y2="460" stroke="#3FB950" stroke-width="1.5" marker-end="url(#b-green)"/>
+
+<!-- PostgreSQL box -->
+<rect x="310" y="460" width="330" height="60" rx="10" fill="#161B22" stroke="#3FB950" stroke-width="2"/>
+<text x="475" y="483" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="600" fill="#3FB950">PostgreSQL · TimescaleDB</text>
+<text x="475" y="499" text-anchor="middle" font-family="Inter,sans-serif" font-size="9" fill="#8B949E">same DB as above — watchlists, watchlist_items, stocks</text>
+
+<!-- legend -->
+<rect x="20" y="550" width="1020" height="42" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<line x1="48" y1="571" x2="74" y2="571" stroke="#A371F7" stroke-width="1.5" marker-end="url(#b-purple)"/>
+<text x="79" y="575" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">Agent orchestration / MCP call</text>
+<line x1="278" y1="571" x2="304" y2="571" stroke="#D29922" stroke-width="1.5" marker-end="url(#b-amber)"/>
+<text x="309" y="575" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">LLM call</text>
+<line x1="418" y1="571" x2="444" y2="571" stroke="#3FB950" stroke-width="1.5" marker-end="url(#b-green)"/>
+<text x="449" y="575" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">DB write</text>
+<line x1="558" y1="567" x2="584" y2="567" stroke="#F85149" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#b-red)"/>
+<text x="589" y="571" font-family="Inter,sans-serif" font-size="10" fill="#8B949E">bypass risk — mitigated client-side, not server-side</text>
+
+<text x="530" y="608" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#656D76">agent_worker spawns mcp_server as a fresh subprocess per run_watchlist_import call — never a direct DB connection or Python import</text>
+
+</svg>
+<figcaption>
+  <strong>What's actually running today</strong>, as of 2026-09-03: a second, independent MCP server (<code>stockpeek-agent-worker</code>) that Claude Desktop calls directly, running one LangGraph graph — <code>resolve</code> (the only LLM call, reads via MCP for context) → <code>apply_loop</code> (one <code>apply_watchlist_update</code> MCP call per resolved stock, no LLM) → <code>summarize</code>.<br>
+  <strong>The write tool it calls, <code>apply_watchlist_update</code>, is also directly reachable by Claude Desktop's own model</strong> if left enabled in its tool picker — confirmed in practice, it will bypass <code>resolve</code> entirely for a simple request. There's no server-side fix; it's disabled client-side in Claude Desktop's per-tool toggle instead.<br>
+  Validated live end-to-end (both AAPL and IONQ landed in a real "Tech Growth" watchlist for user 1) — see <a href="../roadmap-status.md">roadmap-status.md</a> for the two real bugs that surfaced along the way (a cwd-relative <code>.env</code> load, and an <code>ExceptionGroup</code> swallowing the real error).
 </figcaption>
 </figure>
 </div>

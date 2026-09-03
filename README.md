@@ -17,7 +17,18 @@ Once `stockpeek` is registered as an MCP server in Claude Desktop, the tools bel
 available to any chat. Claude Desktop's own chat session and the MCP server's tool calls
 use separate credentials — `get_top_momentum_with_commentary` makes its own outbound call
 to the Claude API and needs a real `ANTHROPIC_API_KEY` set in `.env` regardless of how
-Claude Desktop itself is authenticated.
+Claude Desktop itself is authenticated. **A key alone isn't enough** — the API account
+also needs an actual credit balance (Billing, separate from a Claude.ai/Desktop
+subscription); a valid-but-uncredited key fails with a 400 `invalid_request_error`,
+not a 401, so don't mistake it for an auth problem.
+
+`apply_watchlist_update` should be **disabled** in Claude Desktop's own per-tool toggle
+(chat compose bar → tools icon → `stockpeek` → toggle off). It stays registered on the
+server — the Agent Worker's MCP client reaches it directly and is unaffected by that
+toggle — but leaving it enabled for chat lets Claude Desktop's own model call it straight
+from a simple request, bypassing `run_watchlist_import`'s `resolve` step (and its
+sanitization/validation) entirely. Confirmed in practice: see
+[docs/roadmap-status.md](docs/roadmap-status.md).
 
 ### Sample queries
 
@@ -52,20 +63,36 @@ Notes:
 
 ## Agent Worker (`stockpeek-agent-worker`)
 
-A second, independent MCP server — not yet registered in Claude Desktop (see
-[docs/roadmap-status.md](docs/roadmap-status.md) open issues). Once added as its own
-`mcpServers` entry, it exposes one tool:
+A second, independent MCP server, registered as its own `mcpServers` entry in Claude
+Desktop alongside `stockpeek`. Exposes one tool:
 
 **`run_watchlist_import(user_id, raw_input, input_type)`** — turns an Excel file path,
 pasted CSV text, or a freeform request into watchlist changes. `input_type` is one of
-`"file_path"`, `"csv_text"`, or `"freeform"`. **Requires `ANTHROPIC_API_KEY`** — its
-`resolve` step makes its own LLM call, separate from `get_top_momentum_with_commentary`'s.
+`"file_path"`, `"csv_text"`, or `"freeform"`. **Requires `ANTHROPIC_API_KEY` + billing
+credits** (see above) — its `resolve` step makes its own LLM call, separate from
+`get_top_momentum_with_commentary`'s. On failure it returns
+`{"status": "failed", "error": "..."}` with an actionable message rather than an opaque
+MCP error.
+
+**Validated live end-to-end** (2026-09-03): "Add IONQ to my Tech Growth watchlist for
+user 1 using stockpeek-agent-worker" correctly resolved and applied via `resolve` →
+`apply_loop`, landing IONQ in the existing "Tech Growth" watchlist.
 
 > Import the watchlist at C:\Users\arjun2\Downloads\my_stocks.xlsx for user 1.
 
-> Add AAPL, MSFT, and NVDA to my "Tech Growth" watchlist for user 1.
+> Add AAPL, MSFT, and NVDA to my "Tech Growth" watchlist for user 1, using stockpeek-agent-worker.
 
 Internally, `agent_worker` runs its own LangGraph graph (`resolve` → `apply_loop` →
 `summarize`) and talks to the `stockpeek` MCP server above as an MCP *client* — it never
 imports `mcp_server` code directly. See CLAUDE.md's Architecture section for the
 documented write-boundary exception this required.
+
+### Restarting after a code or `.env` change
+
+Both `stockpeek` and `stockpeek-agent-worker` are long-lived processes Claude Desktop
+starts once and keeps running for the whole app session — they don't reread source files
+or `.env` on their own. After editing code, or after adding/changing `ANTHROPIC_API_KEY`,
+fully quit Claude Desktop (system tray icon → Quit, not just closing the window) and
+relaunch it. The one exception is the inner `mcp_server` subprocess `agent_worker` spawns
+for itself on every `run_watchlist_import` call — that one is fresh every time, but the
+outer `agent_worker` process reading `.env` is not.

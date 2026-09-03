@@ -52,3 +52,14 @@ See @docs/roadmap-status.md for what's built, what's in progress, and what's def
 - Sanitize any untrusted tool result (e.g., news article text) before it enters LLM context — prompt-injection defense (Section 8.3).
 - Every LLM call and tool call should be traced via Langfuse — wire this up from Week 7 onward, but keep the instrumentation points in mind from Week 3.
 - Don't add yfinance or unofficial scrapers as a data source — see design-doc.md Section 14.3.
+- Any MCP tool that calls the Claude API directly should check for a missing `ANTHROPIC_API_KEY` up front and
+  wrap the call, returning `{"status": "failed", "error": "..."}` via `shared/llm_errors.py`'s
+  `missing_api_key_error()`/`describe_llm_error()` rather than letting an exception surface as MCP's opaque
+  "Error executing tool" with no detail. `describe_llm_error` unwraps `BaseExceptionGroup` first — the MCP
+  SDK's `ClientSession`/`stdio_client` wrap exceptions in one via `anyio` TaskGroups, sometimes nested.
+- A new write tool intended only for the Agent Worker's own use is still reachable by Claude Desktop's own
+  model if it's connected to the same MCP server — there's no server-side way to restrict a tool to one caller.
+  If that matters (bypassing an LLM-driven resolve/validation step, e.g.), disable it in Claude Desktop's
+  per-tool toggle rather than assuming only the intended caller will use it (see design-doc.md Section 8.1).
+- `shared/config.py` loads `.env` via an absolute path, not cwd-relative — Claude Desktop doesn't reliably set
+  `cwd` to the repo root when spawning `mcp_server`/`agent_worker`. Don't revert this to a bare `load_dotenv()`.
