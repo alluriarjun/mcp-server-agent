@@ -8,6 +8,12 @@ Not yet implemented (see docs/roadmap-status.md):
   - get_user_portfolios  — portfolio schema/CRUD not built yet (core-api); get_top_momentum's
                             universe is watchlists only until then
   - save_analysis_finding / create_alert — analysis_findings / alerts tables don't exist yet
+
+Documented exception to CLAUDE.md's write boundary: apply_watchlist_update below writes
+to watchlists/watchlist_items/stocks, tables design-doc.md Section 3.3 otherwise reserves
+for core-api. This was a deliberate call (see docs/roadmap-status.md) made so the
+agent_worker watchlist-import agent can persist in one self-contained repo rather than
+calling core-api's REST API directly, which the Agent Worker is never allowed to do.
 """
 
 from datetime import timedelta
@@ -16,7 +22,9 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from agent_worker.momentum_synthesis import add_commentary
+from shared.config import settings
 from shared.db import get_cursor
+from shared.llm_errors import describe_llm_error, missing_api_key_error
 
 server = MCPServer(
     name="stockpeek-mcp-server",
@@ -97,6 +105,131 @@ def get_user_watchlists(user_id: int) -> list[dict[str, Any]]:
                 {"symbol": row["symbol"], "exchange": row["exchange"], "name": row["stock_name"]}
             )
     return list(watchlists.values())
+
+
+@server.tool()
+def apply_watchlist_update(
+    user_id: int,
+    watchlist_name: str,
+    action: str,
+    symbol: str | None = None,
+    exchange: str = "NASDAQ",
+) -> dict[str, Any]:
+    """Apply one watchlist operation: add/remove a symbol, or create an empty watchlist.
+
+    Single-item, idempotent write tool for the agent_worker watchlist-import agent
+    (docs/design-doc.md discussion, Week 5-6). Called once per resolved operation —
+    there is no batch/list form. action is one of "add", "remove", "create_watchlist".
+
+    "add" finds-or-creates the named watchlist, finds-or-creates the stock (a minimal
+    symbol+exchange stub if unseen, mirroring core-api's WatchlistService.findOrCreateStock
+    so a later core-api sync backfills it normally), then finds-or-creates the
+    watchlist_item — safe to call repeatedly for the same symbol.
+
+    "remove" deletes the watchlist_item if present; a missing watchlist or stock is a
+    no-op, not an error. "create_watchlist" creates an empty named watchlist if it
+    doesn't already exist.
+
+    Every lookup is scoped to (user_id, watchlist_name), which is also the enforcement
+    point for ownership — a watchlist belonging to a different user is simply not found,
+    never mutated.
+    """
+    if action not in ("add", "remove", "create_watchlist"):
+        return {"status": "error", "reason": f"unknown action '{action}'"}
+    if action in ("add", "remove") and not symbol:
+        return {"status": "error", "reason": f"symbol is required for action '{action}'"}
+
+    with get_cursor() as cur:
+        cur.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        if cur.fetchone() is None:
+            return {"status": "error", "reason": f"user {user_id} not found"}
+
+        cur.execute(
+            "SELECT id FROM watchlists WHERE user_id = %s AND name = %s",
+            (user_id, watchlist_name),
+        )
+        row = cur.fetchone()
+        watchlist_id = row["id"] if row else None
+
+        if action == "create_watchlist":
+            if watchlist_id is not None:
+                return {"status": "already_exists", "watchlist_id": watchlist_id}
+            cur.execute(
+                "INSERT INTO watchlists (user_id, name) VALUES (%s, %s) RETURNING id",
+                (user_id, watchlist_name),
+            )
+            return {"status": "created", "watchlist_id": cur.fetchone()["id"]}
+
+        if action == "remove":
+            if watchlist_id is None:
+                return {"status": "noop", "reason": "watchlist not found"}
+            cur.execute(
+                "SELECT id FROM stocks WHERE symbol = %s AND exchange = %s",
+                (symbol.upper(), exchange.upper()),
+            )
+            stock_row = cur.fetchone()
+            if stock_row is None:
+                return {"status": "noop", "reason": "stock not found"}
+            cur.execute(
+                "DELETE FROM watchlist_items WHERE watchlist_id = %s AND stock_id = %s",
+                (watchlist_id, stock_row["id"]),
+            )
+            removed = cur.rowcount > 0
+            return {
+                "status": "removed" if removed else "noop",
+                "watchlist_id": watchlist_id,
+                "symbol": symbol.upper(),
+            }
+
+        # action == "add"
+        watchlist_created = watchlist_id is None
+        if watchlist_created:
+            cur.execute(
+                "INSERT INTO watchlists (user_id, name) VALUES (%s, %s) RETURNING id",
+                (user_id, watchlist_name),
+            )
+            watchlist_id = cur.fetchone()["id"]
+
+        symbol = symbol.upper()
+        exchange = exchange.upper()
+        cur.execute(
+            "SELECT id FROM stocks WHERE symbol = %s AND exchange = %s",
+            (symbol, exchange),
+        )
+        stock_row = cur.fetchone()
+        stock_created = stock_row is None
+        if stock_created:
+            # Minimal stub, mirroring core-api's WatchlistService.findOrCreateStock —
+            # name/sector left null, currency/asset_type fall back to their DDL defaults.
+            # A future core-api sync backfills real metadata and price history for it.
+            cur.execute(
+                "INSERT INTO stocks (symbol, exchange) VALUES (%s, %s) RETURNING id",
+                (symbol, exchange),
+            )
+            stock_id = cur.fetchone()["id"]
+        else:
+            stock_id = stock_row["id"]
+
+        cur.execute(
+            "SELECT 1 FROM watchlist_items WHERE watchlist_id = %s AND stock_id = %s",
+            (watchlist_id, stock_id),
+        )
+        already_present = cur.fetchone() is not None
+        if not already_present:
+            cur.execute(
+                "INSERT INTO watchlist_items (watchlist_id, stock_id) VALUES (%s, %s)",
+                (watchlist_id, stock_id),
+            )
+
+        return {
+            "status": "already_present" if already_present else "added",
+            "watchlist_id": watchlist_id,
+            "watchlist_created": watchlist_created,
+            "stock_id": stock_id,
+            "stock_created": stock_created,
+            "symbol": symbol,
+            "exchange": exchange,
+        }
 
 
 @server.tool()
@@ -213,6 +346,10 @@ def get_top_momentum_with_commentary(
     deterministic ranking/filtering; this only adds narrative interpretation on
     top of that already-small, already-decided result set (agent_worker.momentum_synthesis)
     — the LLM never re-ranks or filters.
+
+    On failure, returns a single-item list with {"status": "failed", "error": ...}
+    instead of raising — an unhandled exception here would otherwise surface to the
+    caller as MCP's generic "Error executing tool" with no detail at all.
     """
     ranked = get_top_momentum(
         user_id=user_id,
@@ -222,7 +359,12 @@ def get_top_momentum_with_commentary(
         baseline_volume_days=baseline_volume_days,
         volume_confirm_ratio=volume_confirm_ratio,
     )
-    return add_commentary(ranked)
+    if not settings.anthropic_api_key:
+        return [{"status": "failed", "error": missing_api_key_error()}]
+    try:
+        return add_commentary(ranked)
+    except Exception as exc:
+        return [{"status": "failed", "error": describe_llm_error(exc)}]
 
 
 def main() -> None:

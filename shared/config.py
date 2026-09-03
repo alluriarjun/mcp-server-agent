@@ -1,8 +1,13 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Absolute path, not load_dotenv()'s default cwd-relative search — mcp_server and
+# agent_worker are both spawned by Claude Desktop, which doesn't reliably set cwd to
+# the repo root (see docs/roadmap-status.md), so a cwd-relative lookup silently finds
+# nothing and every setting below falls back to its (often wrong) default.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 class Settings:

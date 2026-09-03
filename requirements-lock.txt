@@ -9,6 +9,7 @@ click==8.5.0
 cryptography==50.0.1
 distro==1.9.0
 docstring_parser==0.18.0
+et_xmlfile==2.0.0
 h11==0.16.0
 httpcore==1.0.9
 httpcore2==2.12.0
@@ -29,6 +30,7 @@ langgraph-sdk==0.4.3
 langsmith==0.11.1
 mcp==2.1.1
 mcp-types==2.1.1
+openpyxl==3.1.5
 opentelemetry-api==1.44.0
 orjson==3.12.0
 ormsgpack==1.12.2

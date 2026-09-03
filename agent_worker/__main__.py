@@ -1,6 +1,4 @@
-def main() -> None:
-    print("agent_worker scaffold — LangGraph agents not yet built (see docs/roadmap-status.md)")
-
+from agent_worker.server import main
 
 if __name__ == "__main__":
     main()

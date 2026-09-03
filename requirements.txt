@@ -4,3 +4,4 @@ anthropic
 pydantic
 python-dotenv
 langgraph
+openpyxl

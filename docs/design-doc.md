@@ -310,6 +310,7 @@ The MCP Server is a separate Python service that independently implements its ow
 | `get_user_portfolios(user_id)` | Read | All of a user's named portfolios and their holdings |
 | `save_analysis_finding(user_id, stock_id, finding_type, summary, details)` | Write | Persists an agent-generated finding (e.g., a momentum signal) to `analysis_findings`. This write is what triggers the notification flow (Section 8.4). |
 | `create_alert(user_id, stock_id, condition)` | Write | Lets the agent (or a user-initiated flow) register a standing watch condition for future evaluation |
+| `apply_watchlist_update(user_id, watchlist_name, action, symbol, exchange)` | Write | **Documented exception** to this section's data-ownership split: writes to `watchlists`/`watchlist_items`/`stocks` (otherwise `core-api`-owned, Section 3.3) so the watchlist-import agent (Section 8.2) can persist changes without the Agent Worker calling Core API's REST API directly. Single-item and idempotent — one call per resolved stock, not a batch. Mirrors `core-api`'s own `WatchlistService.findOrCreateStock` for symbols not yet in `stocks` (a minimal stub row; a later Core API sync backfills real metadata/history). |
 
 ### 8.2 Multi-Agent Orchestration
 
@@ -326,6 +327,10 @@ Built with LangGraph (Python) as a directed graph of specialized agents:
 - Parallel fan-out/fan-in for analyzing multiple stocks concurrently.
 - Session memory/state persistence via LangGraph checkpointers (resumable analysis sessions, follow-up queries like "compare that to last week").
 - All outputs validated against Pydantic schemas — no unstructured/freeform critical output.
+
+**Agent Worker as its own MCP server:** the Agent Worker is not just a library of functions the MCP Server imports in-process — it runs as its own standalone process, registered as a second, independent MCP server (its own `mcpServers` entry) alongside the MCP Server described in Section 8.1. Whatever calls it (Claude Desktop today; a scheduler or another service tomorrow) reaches it only over the MCP protocol, and it in turn connects to the Section 8.1 MCP Server as an MCP *client* for every read and write — the same "Agent Worker only talks to the MCP Server" boundary from Section 3.3, just genuinely implemented rather than shortcut via a Python import.
+
+**Watchlist-import agent** (first concrete graph built this way): `resolve` (one LLM call — turns a raw Excel/CSV file or a freeform request into a structured, validated proposal, cross-checked against the user's existing watchlists via an MCP read) → `apply_loop` (no LLM — one `apply_watchlist_update` MCP call per resolved stock, not a batch, so a partial failure or a re-run is safe) → `summarize` (no LLM — packages the result). This is a separate graph from the Data Gathering → Technical → Sentiment → Synthesis pipeline above, which remains not-yet-built.
 
 ### 8.3 Observability & Evaluation
 

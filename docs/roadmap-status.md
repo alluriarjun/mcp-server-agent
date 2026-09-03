@@ -2,8 +2,8 @@
 
 > Update this file at the end of each Claude Code session. Keep entries short — this is a status board, not a journal. See @CLAUDE.md and @docs/design-doc.md Section 11 for the full 8-week plan this tracks against.
 
-**Last updated:** 2026-08-27
-**Current week:** 3
+**Last updated:** 2026-09-03
+**Current week:** 5
 
 ---
 
@@ -27,7 +27,7 @@
 - [x] Standalone Python MCP server (`mcp_server/server.py`, official SDK's `MCPServer`, mcp==2.1.1 — note: 2.x renamed `FastMCP` to `MCPServer`, imported from `mcp.server.mcpserver`) with three working read tools against the real shared DB: `get_timeseries` (price_timeseries, joined on stocks), `get_user_watchlists` (watchlists + watchlist_items + stocks), and `get_top_momentum` (deterministic momentum screen — % return over a window + a volume-surge confirmation signal — across the distinct symbols in a user's watchlists; no LLM/agent involved, this is the ranking step a future momentum-interpretation agent would consume, not a replacement for it). All three validated end-to-end over stdio with a real `ClientSession` (list_tools + call_tool against the live `core-api-db-1` container) — confirmed correct structured output.
 - [x] Wired into Claude Desktop for manual chat-based validation: added an `mcpServers.stockpeek` entry (pointing at the venv's `python.exe` with `PYTHONPATH` set, since Claude Desktop doesn't reliably support a `cwd` field) to the packaged app's actual config path — `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`, **not** the plain `%APPDATA%\Claude\` path, since this is the MSIX-packaged build. Merged in, didn't overwrite existing `cowork`/`epitaxy` prefs already in that file.
 - [ ] `get_quote` (needs Finnhub live-quote integration, Section 2.5), `get_user_portfolios` (blocked on portfolio schema/CRUD in core-api), `save_analysis_finding`/`create_alert` (blocked on `analysis_findings`/alerts tables, which don't exist in the DB yet — only V1/V2 migrations exist so far)
-- [x] `get_top_momentum_with_commentary` (`mcp_server/server.py`, backed by `agent_worker/momentum_synthesis.py`): tier-2 slice on top of `get_top_momentum` — a single structured Claude API call (`client.messages.parse`, Pydantic `MomentumCommentaryBatch` output, per CLAUDE.md's "validate all agent outputs against Pydantic schemas") that adds a headline + 1-2 sentence rationale per already-ranked stock. Deliberately does NOT re-rank or filter — that stays in the deterministic `get_top_momentum` tier. Uses `settings.llm_model_dev` (Haiku) per the design doc's dev/prod model routing. Validated the code path (ranking → prompt construction → API call) end-to-end; the actual LLM call itself is untested live since `ANTHROPIC_API_KEY` in `.env` is still empty — set a real key to validate that last piece.
+- [x] `get_top_momentum_with_commentary` (`mcp_server/server.py`, backed by `agent_worker/momentum_synthesis.py`): tier-2 slice on top of `get_top_momentum` — a single structured Claude API call (`client.messages.parse`, Pydantic `MomentumCommentaryBatch` output, per CLAUDE.md's "validate all agent outputs against Pydantic schemas") that adds a headline + 1-2 sentence rationale per already-ranked stock. Deliberately does NOT re-rank or filter — that stays in the deterministic `get_top_momentum` tier. Uses `settings.llm_model_dev` (Haiku) per the design doc's dev/prod model routing. Code path validated end-to-end; the live LLM call itself wasn't re-confirmed after the key was set (2026-09-03), but `resolve` in `agent_worker/watchlist_import.py` uses the identical `client.messages.parse` pattern and *is* confirmed live (see Week 5-6), so the same call shape is known working.
 - [ ] Simple LLM client (Claude API) connecting to MCP server
 - [x] Full loop validated: MCP client → tool call → structured response (validated directly; natural-language-driven client not yet built)
 
@@ -35,7 +35,13 @@
 
 - [ ] Multi-agent system in LangGraph: Momentum, Value, Sentiment, Synthesis agents
 - [ ] Session memory via LangGraph checkpointers
-- [ ] Pydantic-validated structured outputs across agent boundaries
+- [x] Pydantic-validated structured outputs across agent boundaries (`agent_worker/schemas.py`: `WatchlistOperation`, `WatchlistUpdateProposal`, `AppliedOperation`, `WatchlistImportSummary`)
+- [x] **Watchlist-import agent** — first real LangGraph graph, and the first time `agent_worker` runs as its own process rather than being imported in-process by `mcp_server`:
+  - `agent_worker/server.py` — a second, independent MCP server (`stockpeek-agent-worker`), registered as its own `mcpServers` entry in Claude Desktop's config alongside `stockpeek`. Exposes one tool, `run_watchlist_import(user_id, raw_input, input_type)`.
+  - `agent_worker/mcp_client.py` — `stockpeek_session()` spawns `python -m mcp_server` as a subprocess and opens a real `ClientSession` over stdio; every read/write agent_worker needs goes through `call_tool()` on that session, never a direct DB connection or a Python import of `mcp_server` code.
+  - `agent_worker/watchlist_import.py` — the graph: `resolve` (1 LLM call via `client.messages.parse`, reads `get_user_watchlists` for context, turns raw Excel/`.xlsx`/CSV/freeform input into a `WatchlistUpdateProposal`) → `apply_loop` (no LLM, one `apply_watchlist_update` MCP call per resolved operation) → `summarize` (no LLM, packages the result). Resolve's system prompt treats raw input as untrusted data per CLAUDE.md's sanitization rule.
+  - `mcp_server/server.py`'s new `apply_watchlist_update` tool — single-item, idempotent (find-or-create at every level: watchlist → stock → item), stub-creates unseen stocks exactly like core-api's `WatchlistService.findOrCreateStock` (symbol+exchange only). **Documented exception** to the write-boundary rule — see CLAUDE.md and design-doc.md Section 8.1.
+  - **Validated live end-to-end from Claude Desktop** (2026-09-03): "Using StockPeek, add AAPL to my Tech Growth watchlist for user 1" correctly created a new "Tech Growth" watchlist and stub-created AAPL/NASDAQ into it — `resolve`'s live Claude API call (the piece blocked on an empty `ANTHROPIC_API_KEY`) is now confirmed working, same as the direct/manual round-trip tests before it.
 
 ## Week 7–8 — Observability, Reliability & Polish (Core API's slice)
 
@@ -48,7 +54,8 @@
 
 ## Open issues / blockers
 
-_(none yet)_
+- `feature 2` (periodic per-watchlist commentary agent, scheduler-triggered) is designed at a conceptual level only — no graph, tool, or migration built yet. Blocked on `analysis_findings` not existing (needs a new `core-api` Flyway migration) and on `save_analysis_finding` not being implemented.
+- `ANTHROPIC_API_KEY` in `.env` is still genuinely empty (confirmed 2026-09-03) — the earlier "AAPL added successfully" chat run is now understood to have gone through the `apply_watchlist_update` direct-call bypass (see next section), not through `resolve`. `run_watchlist_import` and `get_top_momentum_with_commentary` both now fail fast with a clear message instead of erroring opaquely (see below), but neither is validated live with a real key yet.
 
 ## Decisions made during build (not yet reflected in design-doc.md)
 
@@ -56,3 +63,5 @@ _(none yet)_
 - Sync is currently exposed only as `POST /api/marketdata/sync?full={bool}` (manual/API trigger); the `@Scheduled` daily job from design-doc.md Section 7 is deferred to a follow-up session.
 - `mcp-server-agent` scaffold uses Python 3.14 (only version present on the dev machine) instead of the 3.12 pinned in CLAUDE.md — installs were clean (mcp, psycopg2-binary, anthropic, pydantic, langgraph all had 3.14 wheels), so no blocker yet, but worth pinning down to 3.12 via pyenv/similar if a 3.12-only dependency shows up later.
 - Scaffold uses stdlib `venv` + `pip`/`requirements.txt` instead of `uv`/`poetry` (CLAUDE.md's stated convention) — neither tool was installed on the dev machine. Switch is easy later (`uv pip install -r requirements.txt` or `poetry init` off the existing lock) if desired.
+- `shared/config.py`'s `load_dotenv()` was cwd-relative (the default), which silently found nothing when Claude Desktop spawned `mcp_server`/`agent_worker` (it doesn't reliably set `cwd` to the repo root — same quirk noted in Week 3-4's entry above for `PYTHONPATH`). Reproduced directly (spawned with `cwd` outside the repo — `ANTHROPIC_API_KEY` came back empty while DB settings looked fine only because their hardcoded defaults happen to match real dev values) and fixed by resolving `.env` via an absolute path next to `shared/`, independent of the caller's working directory.
+- `agent_worker/server.py`'s `run_watchlist_import` and `mcp_server/server.py`'s `get_top_momentum_with_commentary` both now check for a missing `ANTHROPIC_API_KEY` up front and catch Claude API failures (`shared/llm_errors.py`), returning `{"status": "failed", "error": "..."}` instead of letting an exception surface to the MCP caller as a bare "Error executing tool" with no detail. Verified directly with the key still empty — both return the actionable message rather than raising.

@@ -18,10 +18,22 @@ See @docs/roadmap-status.md for what's built, what's in progress, and what's def
 ## Architecture (this repo's scope)
 
 - `mcp_server/` — official MCP SDK server exposing read + write tools (design-doc.md Section 8.1):
-  `get_quote`, `get_timeseries`, `get_user_watchlists`, `get_user_portfolios`, `save_analysis_finding`, `create_alert`
-- `agent_worker/` — LangGraph multi-agent system (design-doc.md Section 8.2): Data Gathering → Technical Analysis → Sentiment Analysis (conditional) → Report Synthesis
+  `get_quote`, `get_timeseries`, `get_user_watchlists`, `get_user_portfolios`, `save_analysis_finding`, `create_alert`,
+  plus `apply_watchlist_update` (see write-boundary exception below)
+- `agent_worker/` — its own MCP server (a second `mcpServers` entry, not code imported in-process by `mcp_server`),
+  connecting to `mcp_server` as an MCP *client* for every read/write it needs. Runs LangGraph graphs:
+  - `watchlist_import` (`agent_worker/watchlist_import.py`): resolve (1 LLM call, turns raw Excel/CSV/freeform
+    input into a structured proposal) → apply_loop (N single-item MCP calls, no LLM) → summarize (no LLM).
+    Trigger-agnostic — Claude Desktop calls `run_watchlist_import` today, but nothing in the graph assumes that.
+  - The portfolio-analysis pipeline from design-doc.md Section 8.2 (Data Gathering → Technical Analysis →
+    Sentiment Analysis (conditional) → Report Synthesis) is a separate, not-yet-built graph.
 - This repo independently implements its own data access against the shared DB — it does NOT call into the Java `marketdata` package.
-- Owns writes to `analysis_findings` only, via `save_analysis_finding` — never writes to tables owned by `core-api` (users, watchlists, portfolios, price_timeseries).
+- Owns writes to `analysis_findings`, via `save_analysis_finding`.
+  **Documented exception**: `apply_watchlist_update` also writes to `watchlists`/`watchlist_items`/`stocks` —
+  tables otherwise reserved for `core-api` — so the watchlist-import agent can persist without the Agent
+  Worker ever calling Core API's REST API directly (still prohibited). Mirrors core-api's own
+  `WatchlistService.findOrCreateStock` stub-row behavior for unseen symbols. No other table is written from
+  this repo.
 - Agent never calls a "send notification" tool directly — its responsibility ends at `save_analysis_finding`. Delivery is a future Notification Service reacting to the DB write event (Section 8.4).
 
 ## Conventions
